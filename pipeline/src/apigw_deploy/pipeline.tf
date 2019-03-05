@@ -1,6 +1,10 @@
 resource "aws_s3_bucket" "artifacts" {
   bucket = "prm-${data.aws_caller_identity.current.account_id}-apigw-deploy-pipeline-artifacts-${var.environment}"
   acl    = "private"
+
+  versioning {
+    enabled = true
+  }
 }
 
 # Role to use for running pipeline
@@ -26,13 +30,16 @@ data "aws_iam_policy_document" "pipeline_role_policy" {
     effect = "Allow"
 
     actions = [
-      "s3:DeleteObject",
-      "s3:GetObject",
-      "s3:PutObject",
-      "s3:PutObjectAcl",
+      "s3:DeleteObject*",
+      "s3:GetObject*",
+      "s3:PutObject*",
+      "s3:*",
     ]
 
-    resources = ["${aws_s3_bucket.artifacts.arn}/*"]
+    resources = [
+      "${aws_s3_bucket.artifacts.arn}/*",
+      "arn:aws:s3:::prm-${data.aws_caller_identity.current.account_id}-send-lambda-pipeline-artifacts-${var.environment}/*"
+    ]
   }
 
   statement {
@@ -43,7 +50,10 @@ data "aws_iam_policy_document" "pipeline_role_policy" {
       "s3:GetBucketVersioning",
     ]
 
-    resources = ["${aws_s3_bucket.artifacts.arn}"]
+    resources = [
+      "${aws_s3_bucket.artifacts.arn}",
+      "arn:aws:s3:::prm-${data.aws_caller_identity.current.account_id}-send-lambda-pipeline-artifacts-${var.environment}"
+    ]
   }
 
   statement {
@@ -98,6 +108,21 @@ resource "aws_codepipeline" "pipeline" {
         OAuthToken = "${data.aws_ssm_parameter.github_token.value}"
       }
     }
+
+    action {
+      name             = "send_lambda"
+      category         = "Source"
+      owner            = "AWS"
+      provider         = "S3"
+      version          = "1"
+      output_artifacts = ["send_lambda"]
+      run_order        = 1
+
+      configuration {
+        S3Bucket = "prm-${data.aws_caller_identity.current.account_id}-send-lambda-pipeline-artifacts-${var.environment}"
+        S3ObjectKey = "prm-send-lambda-${var.environment}/outputs/output.json"     
+      }
+    }
   }
 
   stage {
@@ -110,10 +135,30 @@ resource "aws_codepipeline" "pipeline" {
       provider        = "CodeBuild"
       version         = "1"
       input_artifacts = ["source"]
+      output_artifacts = ["terraform"]
 
       configuration {
         ProjectName = "${aws_codebuild_project.deploy.name}"
         PrimarySource = "source"
+      }
+    }
+  }
+
+  stage {
+    name = "notify"
+
+    action {
+      name = "notify"
+      category = "Deploy"
+      owner = "AWS"
+      provider = "S3"
+      version = "1"
+      input_artifacts = ["terraform"]
+
+      configuration {
+        BucketName = "${aws_s3_bucket.artifacts.bucket}"
+        Extract = "true"
+        ObjectKey = "prm-apigw-deploy-${var.environment}/outputs"
       }
     }
   }

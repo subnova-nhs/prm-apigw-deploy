@@ -4,3 +4,8 @@ phases:
   build:
     commands:
     - make deploy-${ENVIRONMENT}-${ACCOUNT_ID}
+artifacts:
+  files:
+    - /tmp/output.json
+  name: terraform
+  discard-paths: yes
